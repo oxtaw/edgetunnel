@@ -5177,7 +5177,33 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	};
 
 	try {
-		let configJSON = await env.KV.get('config.json');
+		let configJSON = null;
+		// 优先从外部URL读取配置
+		const 远程配置URL = env.CONFIG_URL;
+		if (远程配置URL && !重置配置) {
+			try {
+				const controller = new AbortController();
+				const timeoutId = setTimeout(() => controller.abort(), 5000);
+				const response = await fetch(远程配置URL, { signal: controller.signal });
+				clearTimeout(timeoutId);
+				if (response.ok) {
+					const text = await response.text();
+					const 远程配置 = JSON.parse(text);
+					// 保留本地的HOST和UUID
+					远程配置.HOST = host;
+					远程配置.UUID = userID;
+					远程配置.HOSTS = config_JSON.HOSTS || [hostname];
+					configJSON = JSON.stringify(远程配置);
+					await env.KV.put('config.json', configJSON);
+				}
+			} catch (e) {
+				console.error(`从CONFIG_URL读取配置失败: ${e.message}`);
+			}
+		}
+		// 如果远程配置读取失败，从KV读取
+		if (!configJSON) {
+			configJSON = await env.KV.get('config.json');
+		}
 		if (!configJSON || 重置配置 == true) {
 			await env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2));
 			config_JSON = 默认配置JSON;
