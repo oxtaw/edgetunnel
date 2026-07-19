@@ -5080,7 +5080,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 		gRPC模式: "gun",
 		gRPCUserAgent: UA,
 		跳过证书验证: false,
-		启用0RTT: false,
+		启用0RTT: true,
 		TLS分片: null,
 		随机路径: false,
 		ECH: false,
