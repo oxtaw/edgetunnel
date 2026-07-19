@@ -5567,6 +5567,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
 			const IPV6_PATTERN = /^[^\[\]]*:[^\[\]]*:[^\[\]]/;
 			const parsedUrl = new URL(urlWithoutHash);
 			if (!isCSV) {
+				let cooCounter = 1;
 				lines.forEach(line => {
 					const lineHashIndex = line.indexOf('#');
 					const [hostPart, remark] = lineHashIndex > -1 ? [line.substring(0, lineHashIndex), line.substring(lineHashIndex)] : [line, ''];
@@ -5578,7 +5579,9 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
 						hasPort = colonIndex > -1 && /^\d+$/.test(hostPart.substring(colonIndex + 1));
 					}
 					const port = parsedUrl.searchParams.get('port') || 默认端口;
-					const ipItem = hasPort ? line : `${hostPart}:${port}${remark}`;
+					const newRemark = `#Coo随机${cooCounter}`;
+					cooCounter++;
+					const ipItem = hasPort ? `${hostPart}${newRemark}` : `${hostPart}:${port}${newRemark}`;
 					// 处理第一个数组 - 优选IP
 					if (API备注名) {
 						const 处理后IP = ipItem.includes('#')
