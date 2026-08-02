@@ -124,7 +124,7 @@ export default {
 							const 待验证优选URL = url.searchParams.get('url');
 							try {
 								new URL(待验证优选URL);
-								const 请求优选API内容 = await 请求优选API([待验证优选URL], url.searchParams.get('port') || '443');
+								const 请求优选API内容 = await 请求优选API([待验证优选URL], url.searchParams.get('port') || '443', 3000, env);
 								let 优选API的IP = 请求优选API内容[0].length > 0 ? 请求优选API内容[0] : 请求优选API内容[1];
 								优选API的IP = 优选API的IP.map(item => item.replace(/#(.+)$/, (_, remark) => '#' + decodeURIComponent(remark)));
 								return new Response(JSON.stringify({ success: true, data: 优选API的IP }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -288,7 +288,7 @@ export default {
 						return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
 					} else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
 						let 本地优选IP = await env.KV.get('ADD.txt') || 'null';
-						if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口))[1];
+						if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, env))[1];
 						return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'asn': request.cf.asn } });
 					} else if (访问路径 === 'admin/cf.json') {// CF配置文件
 						return new Response(JSON.stringify(request.cf, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -359,7 +359,7 @@ export default {
 								];
 								const 用户自定义 = await env.KV.get('ADD.txt') ? await 整理成数组(await env.KV.get('ADD.txt')) : null;
 								const 完整优选列表 = config_JSON.优选订阅生成.本地IP库.随机IP ? (
-									await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口)
+									await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, env)
 								)[0] : 用户自定义 || 默认优选URL;
 								const 优选API = [], 优选IP = [], 其他节点 = [];
 								for (const 元素 of 完整优选列表) {
@@ -388,14 +388,14 @@ export default {
 										}
 									}
 								}
-							const 请求优选API内容 = await 请求优选API(优选API, '443');
+							const 请求优选API内容 = await 请求优选API(优选API, '443', 3000, env);
 								const 合并其他节点数组 = [...new Set(其他节点.concat(请求优选API内容[1]))];
 								其他节点LINK = 合并其他节点数组.length > 0 ? 合并其他节点数组.join('\n') + '\n' : '';
 								const 优选API的IP = 请求优选API内容[0];
 								反代IP池 = 请求优选API内容[3] || [];
 								完整优选IP = [...new Set(优选IP.concat(优选API的IP))];
 								if (完整优选IP.length === 0 && !用户自定义 && !config_JSON.优选订阅生成.本地IP库.随机IP) {
-									const 回退随机IP = await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口);
+									const 回退随机IP = await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, env);
 									完整优选IP = 回退随机IP[0];
 								}
 							} else { // 优选订阅生成器
@@ -5713,7 +5713,87 @@ function 识别运营商(request) {
 	return 命中运营商 || ASN运营商映射[String(cf?.asn || '')] || 'cf';
 }
 
-async function 生成随机IP(request, count = 16, 指定端口 = -1) {
+// 批量查询IP地区信息（带缓存）
+async function 批量查询IP地区(env, ipList) {
+	const 结果 = new Map();
+	const 待查询IP = [];
+
+	// 先从缓存读取
+	for (const ip of ipList) {
+		const 缓存 = await env.KV.get(`geo:${ip}`, 'json');
+		if (缓存) {
+			结果.set(ip, 缓存);
+		} else {
+			待查询IP.push(ip);
+		}
+	}
+
+	// 批量查询未缓存的IP
+	const 批次大小 = 10;
+	for (let i = 0; i < 待查询IP.length; i += 批次大小) {
+		const 批次 = 待查询IP.slice(i, i + 批次大小);
+		const 批次结果 = await Promise.allSettled(
+			批次.map(async (ip) => {
+				try {
+					const response = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,isp`, {
+						signal: AbortSignal.timeout(3000)
+					});
+					const data = await response.json();
+					const 地区信息 = {
+						country: data.country || 'Unknown',
+						city: data.city || '',
+						isp: data.isp || ''
+					};
+					// 缓存结果（24小时过期）
+					await env.KV.put(`geo:${ip}`, JSON.stringify(地区信息), { expirationTtl: 86400 });
+					return { ip, 地区信息 };
+				} catch {
+					return { ip, 地区信息: { country: 'Unknown', city: '', isp: '' } };
+				}
+			})
+		);
+		批次结果.forEach(结果项 => {
+			if (结果项.status === 'fulfilled') {
+				结果.set(结果项.value.ip, 结果项.value.地区信息);
+			}
+		});
+	}
+
+	return 结果;
+}
+
+// 为IP列表生成带地区的备注（处理重名）
+async function 生成带地区备注(env, ip端口列表) {
+	const ipList = ip端口列表.map(item => {
+		const match = item.match(/^(\d+\.\d+\.\d+\.\d+|\[[\da-f:]+\])/);
+		return match ? match[1] : null;
+	}).filter(Boolean);
+
+	const 地区Map = await 批量查询IP地区(env, ipList);
+
+	// 按地区分组计数
+	const 地区分组计数 = {};
+	const 结果 = ip端口列表.map(item => {
+		const ipMatch = item.match(/^([\d.]+|\[[\da-f:]+\]):(\d+)#(.+)$/);
+		if (!ipMatch) return item;
+
+		const [_, ip, port, 原备注] = ipMatch;
+		const 地区信息 = 地区Map.get(ip) || { country: 'Unknown', city: '' };
+		const 地区名 = 地区信息.country === 'Unknown' ? '未知' :
+			地区信息.city ? `${地区信息.country}-${地区信息.city}` : 地区信息.country;
+
+		// 处理重名
+		if (!地区分组计数[地区名]) 地区分组计数[地区名] = 0;
+		地区分组计数[地区名]++;
+		const 序号 = String(地区分组计数[地区名]).padStart(2, '0');
+
+		return `${ip}:${port}#${地区名}-${序号}`;
+	});
+
+	return 结果;
+}
+
+async function 生成随机IP(request, count = 16, 指定端口 = -1, env = null) {
 	const url = new URL(request.url);
 	const 查询参数运营商 = String(url.searchParams.get('cnIspCode') || '').toLowerCase();
 	const 运营商文件标识 = ['ct', 'cu', 'cmcc', 'cf'].includes(查询参数运营商) ? 查询参数运营商 : 识别运营商(request);
@@ -5743,6 +5823,13 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1) {
 			: 指定端口;
 		return `${ip}:${目标端口}#Coo随机${index + 1}`;
 	});
+
+	// 如果有env，则查询地区并替换备注
+	if (env) {
+		const 带地区备注IPs = await 生成带地区备注(env, randomIPs);
+		return [带地区备注IPs, 带地区备注IPs.join('\n')];
+	}
+
 	return [randomIPs, randomIPs.join('\n')];
 }
 
@@ -5805,7 +5892,7 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
 	return [优选IP, 其他节点LINK];
 }
 
-async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) {
+async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000, env = null) {
 	if (!urls?.length) return [[], [], [], []];
 	const results = new Set(), 反代IP池 = new Set();
 	let 订阅链接响应的明文LINK内容 = '', 需要订阅转换订阅URLs = [];
@@ -5937,7 +6024,8 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
 			const IPV6_PATTERN = /^[^\[\]]*:[^\[\]]*:[^\[\]]/;
 			const parsedUrl = new URL(urlWithoutHash);
 			if (!isCSV) {
-				let cooCounter = 1;
+				// 先收集所有IP，然后批量查询地区
+				const 临时IP列表 = [];
 				lines.forEach(line => {
 					const lineHashIndex = line.indexOf('#');
 					const [hostPart, remark] = lineHashIndex > -1 ? [line.substring(0, lineHashIndex), line.substring(lineHashIndex)] : [line, ''];
@@ -5949,9 +6037,29 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
 						hasPort = colonIndex > -1 && /^\d+$/.test(hostPart.substring(colonIndex + 1));
 					}
 					const port = parsedUrl.searchParams.get('port') || 默认端口;
-					const newRemark = `#Coo随机${cooCounter}`;
-					cooCounter++;
-					const ipItem = hasPort ? `${hostPart}${newRemark}` : `${hostPart}:${port}${newRemark}`;
+					const ipItem = hasPort ? `${hostPart}:${port}` : `${hostPart}:${port}`;
+					临时IP列表.push({ ip: ipItem.split(':')[0].replace(/^\[|\]$/g, ''), 端口: port, 有端口: hasPort, 原始行: line, hostPart });
+				});
+
+				// 批量查询地区
+				const ip地址列表 = 临时IP列表.map(item => item.ip);
+				const 地区Map = env ? await 批量查询IP地区(env, ip地址列表) : new Map();
+
+				// 生成带地区的备注
+				const 地区分组计数 = {};
+				let cooCounter = 1;
+				临时IP列表.forEach(item => {
+					const 地区信息 = 地区Map.get(item.ip) || { country: 'Unknown', city: '' };
+					const 地区名 = 地区信息.country === 'Unknown' ? 'Coo随机' :
+						地区信息.city ? `${地区信息.country}-${地区信息.city}` : 地区信息.country;
+
+					// 处理重名
+					if (!地区分组计数[地区名]) 地区分组计数[地区名] = 0;
+					地区分组计数[地区名]++;
+					const 序号 = 地区信息.country === 'Unknown' ? cooCounter++ : 地区分组计数[地区名];
+
+					const newRemark = `#${地区名}-${String(序号).padStart(2, '0')}`;
+					const ipItem = item.有端口 ? `${item.hostPart}${newRemark}` : `${item.hostPart}:${item.端口}${newRemark}`;
 					// 处理第一个数组 - 优选IP
 					if (API备注名) {
 						const 处理后IP = ipItem.includes('#')
