@@ -5735,7 +5735,7 @@ async function 批量查询IP地区(env, ipList) {
 		const 批次结果 = await Promise.allSettled(
 			批次.map(async (ip) => {
 				try {
-					const response = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,isp`, {
+					const response = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,isp&lang=zh-CN`, {
 						signal: AbortSignal.timeout(3000)
 					});
 					const data = await response.json();
